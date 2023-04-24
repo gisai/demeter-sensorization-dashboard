@@ -1,0 +1,146 @@
+version: "3"
+
+services:
+  chirpstack-network-server:
+    restart: always
+    image: chirpstack/chirpstack-network-server:3
+    environment:
+      - POSTGRESQL__DSN=postgres://chirpstack_ns:chirpstack_ns@postgresql/chirpstack_ns?sslmode=disable
+      - REDIS__URL=redis://redis:6379
+      - NETWORK_SERVER__BAND__NAME=EU868
+      - NETWORK_SERVER__GATEWAY__BACKEND__MQTT__SERVER=tcp://mosquitto:1883
+      - JOIN_SERVER__DEFAULT__SERVER=http://chirpstack-application-server:8003
+      - GEOLOCATION_SERVER__SERVER=chirpstack-geolocation-server:8005
+    depends_on:
+      - postgresql
+      - mosquitto
+
+  chirpstack-application-server:
+    restart: always
+    image: chirpstack/chirpstack-application-server:3
+    ports:
+      - 8080:8080
+    environment:
+      - POSTGRESQL__DSN=postgres://chirpstack_as:chirpstack_as@postgresql/chirpstack_as?sslmode=disable
+      - REDIS__URL=redis://redis:6379
+      - APPLICATION_SERVER__INTEGRATION__MQTT__SERVER=tcp://mosquitto:1883
+      - APPLICATION_SERVER__API__PUBLIC_HOST=chirpstack-application-server:8001
+      - APPLICATION_SERVER__EXTERNAL_API__JWT_SECRET=verysecret
+    depends_on:
+      - chirpstack-network-server
+
+  chirpstack-gateway-bridge:
+    image: chirpstack/chirpstack-gateway-bridge:3
+    ports:
+      - 1700:1700/udp
+    environment:
+      - INTEGRATION__MQTT__AUTH__GENERIC__SERVERS=tcp://mosquitto:1883
+    depends_on: 
+      - mosquitto
+
+  postgresql:
+    restart: always
+    image: postgres:9.6-alpine
+    environment:
+      - POSTGRES_PASSWORD=root
+    volumes:
+      - ./Volumenes/postgresql/initdb:/docker-entrypoint-initdb.d
+      - pg-data:/var/lib/postgresql/data
+      # no se puede hacer bind mount de este volumen por el tema de permisos en windows. En una maquina linux probar con:
+      # - ./Volumes/pg-data:/var/lib/postgresql/data
+  redis:
+    restart: always
+    image: redis:5-alpine
+    volumes:
+      - ./Volumenes/Redis/redisdata:/data
+
+  mosquitto:
+    restart: always
+    image: eclipse-mosquitto:1.6
+    ports:
+      - 1883:1883
+
+#  node:
+#    build: .
+#    ports:
+#      - 3000:3000
+#    volumes:
+#      - ./LoRa-middleware-main/.:/usr/app/
+#      - /usr/app/node_modules
+#      command: >
+#      sh -c "npm install &&
+#             npm start"      
+
+  #Services for Orion Context Broker
+  orion:
+    restart: always
+    image: fiware/orion:latest
+    hostname: orion
+    command:  -dbhost mongo -port 1026 -logLevel DEBUG
+    links:
+      - mongo
+    ports:
+      - "1026:1026"
+    stdin_open: true
+    tty: true
+
+  mongo:
+    restart: always
+    image: mongo:4.4
+#    hostname: mongodb
+    expose:
+      - "27017"
+    stdin_open: true
+    tty: true
+    volumes:
+      - mongo-data:/data/db
+
+  #Services for quantumLeap
+  quantumleap:
+    restart: always
+    image: smartsdk/quantumleap:latest
+    #build: ../timescale-container/
+    ports:
+      - "8668:8668"
+    depends_on:
+      - crate-db
+    environment:
+      - CRATE_HOST=crate-db
+      - LOGLEVEL=INFO
+
+  crate-db:
+    restart: always
+    image: crate:latest
+    command: crate -Cauth.host_based.enabled=false
+      -Ccluster.name=democluster -Chttp.cors.enabled=true -Chttp.cors.allow-origin="*"
+    ports:
+      # Admin UI
+      - "4200:4200"
+      # Transport protocol
+      - "4300:4300"
+      - "5432:5432"
+    volumes:
+      - crate-data:/data
+    environment:
+      - CRATE_HEAP_SIZE=2g
+
+  grafana:
+    restart: always
+    image: grafana/grafana:latest
+    #container_name: grafana
+    depends_on:
+      - crate-db
+    ports:
+      - "4400:4400"
+    environment:
+      - GF_INSTALL_PLUGINS=https://github.com/orchestracities/grafana-map-plugin/archive/master.zip;grafana-map-plugin,grafana-clock-panel,grafana-worldmap-panel
+      - GF_SERVER_HTTP_PORT=4400
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  redisdata:
+  pg-data:
+  mongo-data:
+  crate-data:
+  grafana_data:
